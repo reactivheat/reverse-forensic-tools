@@ -1,0 +1,30 @@
+# Reverse Engineering & Digital Forensic Tools - Production Dependencies
+# Python 3.10+ required
+
+# Reverse Engineering Dependencies
+capstone>=4.0.0
+keystone-engine>=0.9.2
+pefile>=2023.2.7
+pyelftools>=0.29
+unicorn>=2.0.0
+
+# Digital Forensic Dependencies
+volatility3>=2.0.0
+scapy>=2.5.0
+pyts>=0.12.0
+dfir-ntfs>=2022.1.0
+artifacts>=2023.1.0
+
+# Analysis Dependencies
+yara-python>=4.3.0
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# Utilities
+pyyaml>=6.0.0
+requests>=2.31.0
+psutil>=5.9.0
+python-magic>=0.4.27
+protobuf>=4.21.0
+rich>=13.0.0
