@@ -15,7 +15,9 @@
 ![License](https://img.shields.io/badge/License-MIT-red.svg)
 ![Status](https://img.shields.io/badge/Status-Active-success.svg)
 ![Maintained](https://img.shields.io/badge/Maintained-Yes-brightgreen.svg)
-
+> 🚧 **Project Status:** Active Development
+>
+> This project is currently under active development. Features, APIs, and architecture may change before the first stable release.
 </p>
 
 ---
