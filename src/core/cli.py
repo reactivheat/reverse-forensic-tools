@@ -10,9 +10,8 @@ from rich.panel import Panel
 
 from core.config_manager import ConfigManager
 from core.logger import LoggerManager
-from utils.file_identifier import FileIdentifier
-from utils.hash_calculator import HashCalculator
-from utils.hex_dump_viewer import HexDumpViewer
+from utils import FileIdentifier, HashCalculator, HexDumpViewer, HexDumpConfig
+
 
 
 class ReverseForensicCLI:
@@ -194,7 +193,11 @@ class ReverseForensicCLI:
     def handle_hexdump(self, args: argparse.Namespace) -> int:
         """Handle the hexdump command."""
 
-        from utils.hex_dump_viewer import HexDumpConfig
+        # HexDumpConfig is part of the public utils API.
+        from utils import HexDumpConfig
+
+
+
 
         path = Path(args.path)
         if not path.exists():
@@ -208,7 +211,8 @@ class ReverseForensicCLI:
             or args.max_lines is not None
         ):
             # Read defaults from config/config.yaml via viewer.
-            default_config = self._hexdump._load_default_config()  # type: ignore[attr-defined]
+            default_config = self._hexdump._load_default_config()
+
             config = HexDumpConfig(
                 bytes_per_line=args.bytes_per_line
                 if args.bytes_per_line is not None
