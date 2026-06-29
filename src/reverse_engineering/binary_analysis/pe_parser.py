@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import datetime
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -10,339 +10,542 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from core.config_manager import ConfigManager
-from reverse_engineering.binary_analysis.base_parser import BinaryParserBase
+from core.logger import setup_logger
+
+
+SUSPICIOUS_IMPORTS = {
+    "VirtualAlloc",
+    "WriteProcessMemory",
+    "CreateRemoteThread",
+    "IsDebuggerPresent",
+    "RegOpenKey",
+    "InternetOpen",
+    "WSAStartup",
+}
+
+
+def _shannon_entropy(data: bytes) -> float:
+    """Compute Shannon entropy for a byte sequence."""
+    if not data:
+        return 0.0
+
+    counts = [0] * 256
+    for b in data:
+        counts[b] += 1
+
+    ent = 0.0
+    length = len(data)
+    for c in counts:
+        if c == 0:
+            continue
+        p = c / length
+        ent -= p * math.log2(p)
+    return ent
+
+
+def _subsystem_to_str(subsystem_value: Optional[int]) -> Optional[str]:
+    if subsystem_value is None:
+        return None
+
+    mapping = {
+        1: "Native",
+        2: "Windows GUI",
+        3: "Windows CUI",
+        7: "POSIX CUI",
+        9: "Windows CE GUI",
+        10: "EFI Application",
+        11: "EFI Boot Service Driver",
+        12: "EFI Runtime Driver",
+        13: "EFI ROM",
+        14: "Xbox",
+    }
+    return mapping.get(subsystem_value, str(subsystem_value))
+
+
+def _classify_subsystem(subsystem_value: Optional[int]) -> Optional[str]:
+    if subsystem_value is None:
+        return None
+
+    # As requested: GUI/Console/Driver.
+    # GUI => 2, Console => 3. Driver typically uses subsystem 1 (native) or others,
+    # but PE "Driver" isn't a dedicated Subsystem value everywhere.
+    if subsystem_value == 2:
+        return "GUI"
+    if subsystem_value == 3:
+        return "Console"
+
+    # Heuristic for driver-like values
+    if subsystem_value in (1, 7, 10, 11, 12, 13):
+        return "Driver"
+
+    return _subsystem_to_str(subsystem_value)
+
+
+def _machine_to_arch(machine: int) -> str:
+    if machine == 0x8664:
+        return "x64"
+    if machine == 0x014c:
+        return "x86"
+    if machine in (0x01C4, 0x01C0, 0xAA64):
+        return "ARM"
+    return hex(machine)
+
+
+def _get_section_name(section: pefile.SectionStructure) -> str:
+    raw = getattr(section, "Name", b"")
+    if isinstance(raw, bytes):
+        return raw.rstrip(b"\x00").decode(errors="replace")
+    return str(raw)
+
+
+def _section_characteristics_to_flags(ch: int) -> tuple[bool, bool, bool]:
+    # As requested: readable/writable/executable.
+    # PE flags:
+    #   IMAGE_SCN_MEM_READ    0x40000000
+    #   IMAGE_SCN_MEM_WRITE   0x80000000
+    #   IMAGE_SCN_MEM_EXECUTE 0x20000000
+    readable = bool(ch & 0x40000000)
+    writable = bool(ch & 0x80000000)
+    executable = bool(ch & 0x20000000)
+    return readable, writable, executable
 
 
 @dataclass(frozen=True)
-class PEGeneralInfo:
-    """General PE information extracted from pefile."""
+class _PEHashes:
+    md5: Optional[str]
+    sha1: Optional[str]
+    sha256: Optional[str]
 
-    machine: str
-    timestamp: Optional[str]
-    entry_point: int
-    image_base: int
-    subsystem: Optional[str]
-    dll_characteristics: list[str]
-    file_alignment: Optional[int]
-    section_alignment: Optional[int]
-    checksum: Optional[int]
-    number_of_sections: Optional[int]
-    size_of_image: Optional[int]
-    overlay_present: bool
-    digital_signature_present: bool
-    rich_header_present: bool
-    compiler_timestamp: Optional[str]
+    def to_dict(self) -> dict[str, Optional[str]]:
+        return {"md5": self.md5, "sha1": self.sha1, "sha256": self.sha256}
 
 
-class PEParser(BinaryParserBase):
-    """Parse Portable Executable (PE) binaries using pefile."""
+class PEAnalyzer:
+    """Production-grade PE analyzer module based on pefile.
 
-    def __init__(
-        self,
-        file_path: Path,
-        *,
-        console: Optional[Console] = None,
-        config: Optional[ConfigManager] = None,
-    ) -> None:
-        """Initialize PEParser.
+    Methods are designed to be called individually from the CLI,
+    but `generate_report` can aggregate them into a Rich terminal report.
+    """
 
-        Args:
-            file_path: PE file path.
-            console: Optional Rich console.
-            config: Optional ConfigManager.
-        """
-        super().__init__(file_path, console=console, config=config)
-        self._pe: Optional[pefile.PE] = None
-        self._info: Optional[PEGeneralInfo] = None
+    def __init__(self, *, console: Optional[Console] = None) -> None:
+        self._console = console or Console()
+        self._logger = setup_logger(self.__class__.__name__)
 
-    def validate(self) -> None:
-        """Validate PE input.
+    def _load_pe(self, filepath: Path) -> pefile.PE:
+        """Load a PE using pefile with robust error handling."""
+        # Existence and permissions are handled by callers/CLI,
+        # but we keep defense-in-depth.
+        if not filepath.exists():
+            raise FileNotFoundError(str(filepath))
+        if not filepath.is_file():
+            raise IsADirectoryError(str(filepath))
 
-        Raises:
-            ValueError: If file does not look like a PE.
-            PermissionError: If file cannot be read.
-            FileNotFoundError: If file missing.
-            IsADirectoryError: If path is a directory.
-        """
-        super().validate()
-
-        # Quick validation via DOS/PE magic.
         try:
-            pe = pefile.PE(str(self.file_path), fast_load=True)
+            return pefile.PE(str(filepath), fast_load=False)
         except pefile.PEFormatError as exc:
-            raise ValueError(f"Not a valid PE file: {self.file_path}") from exc
-        except Exception as exc:
-            raise ValueError(f"Failed to load PE for validation: {self.file_path}") from exc
-
-        # Ensure it has an entry point and header.
-        if not hasattr(pe, "OPTIONAL_HEADER"):
-            raise ValueError(f"PE missing OPTIONAL_HEADER: {self.file_path}")
-
-    def _coerce_timestamp(self, ts: Optional[int]) -> Optional[str]:
-        if ts is None:
-            return None
-        try:
-            dt = datetime.datetime.utcfromtimestamp(ts)
-            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except (OSError, OverflowError, ValueError):
-            return None
-
-    @staticmethod
-    def _machine_to_string(machine: int) -> str:
-        # Common PE machine identifiers.
-        mapping = {
-            0x014c: "Intel 386",
-            0x8664: "x64",
-            0x0200: "Intel Itanium",
-            0x01c0: "ARM",
-            0x01c4: "ARMv7",
-            0xAA64: "ARM64",
-            0x014D: "AMD",
-        }
-        return mapping.get(machine, hex(machine))
-
-    def parse(self) -> None:
-        """Parse the PE file and populate internal state."""
-        self.validate()
-
-        try:
-            # Load full info (sections, overlay checks, signatures detection may rely on it).
-            self._pe = pefile.PE(str(self.file_path), fast_load=False)
-        except pefile.PEFormatError as exc:
-            raise ValueError(f"Not a valid PE file: {self.file_path}") from exc
+            raise ValueError(f"Not a valid PE file: {filepath}") from exc
         except PermissionError:
             raise
         except OSError as exc:
-            raise OSError(f"Failed to open PE file: {self.file_path}") from exc
+            raise OSError(f"Failed to open PE file: {filepath}") from exc
 
-        pe = self._pe
+    def _compute_hashes_light(self, filepath: Path) -> _PEHashes:
+        # Keep local to this module (avoid cross-dependencies).
+        import hashlib
+
+        md5_h = hashlib.md5()
+        sha1_h = hashlib.sha1()
+        sha256_h = hashlib.sha256()
+        chunk = 1024 * 1024
+
+        try:
+            with filepath.open("rb") as f:
+                while True:
+                    b = f.read(chunk)
+                    if not b:
+                        break
+                    md5_h.update(b)
+                    sha1_h.update(b)
+                    sha256_h.update(b)
+        except PermissionError:
+            raise
+        except OSError as exc:
+            raise OSError(f"Failed to read file for hashing: {filepath}") from exc
+
+        return _PEHashes(md5=md5_h.hexdigest(), sha1=sha1_h.hexdigest(), sha256=sha256_h.hexdigest())
+
+    def get_metadata(self, filepath: Path | str) -> dict[str, Any]:
+        """Extract general PE metadata as a dictionary."""
+        path = Path(filepath)
+        pe = self._load_pe(path)
+
+        hashes = self._compute_hashes_light(path)
+
         optional = getattr(pe, "OPTIONAL_HEADER", None)
         file_header = getattr(pe, "FILE_HEADER", None)
 
-        machine_str = "unknown"
-        timestamp_str: Optional[str] = None
+        machine_arch = "unknown"
+        timestamp: Optional[str] = None
         entry_point = 0
         image_base = 0
-
-        subsystem: Optional[str] = None
-        dll_characteristics: list[str] = []
-        file_alignment: Optional[int] = None
-        section_alignment: Optional[int] = None
-        checksum: Optional[int] = None
+        subsystem_raw: Optional[int] = None
         number_of_sections: Optional[int] = None
-        size_of_image: Optional[int] = None
-
-        overlay_present = False
-        digital_signature_present = False
-        rich_header_present = False
-        compiler_timestamp: Optional[str] = None
 
         if file_header is not None:
-            machine_raw = getattr(file_header, "Machine", 0)
-            machine_str = self._machine_to_string(int(machine_raw))
-            ts_raw = getattr(file_header, "TimeDateStamp", None)
-            timestamp_str = self._coerce_timestamp(ts_raw)
             number_of_sections = getattr(file_header, "NumberOfSections", None)
+            machine_arch = _machine_to_arch(int(getattr(file_header, "Machine", 0) or 0))
+            ts_raw = getattr(file_header, "TimeDateStamp", None)
+            if ts_raw:
+                # Convert to UTC string.
+                import datetime
+
+                try:
+                    dt = datetime.datetime.utcfromtimestamp(int(ts_raw))
+                    timestamp = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+                except Exception:
+                    timestamp = None
 
         if optional is not None:
-            entry_point = int(getattr(optional, "AddressOfEntryPoint", 0))
-            image_base = int(getattr(optional, "ImageBase", 0))
-            checksum = getattr(optional, "CheckSum", None)
-            file_alignment = getattr(optional, "FileAlignment", None)
-            section_alignment = getattr(optional, "SectionAlignment", None)
-            size_of_image = getattr(optional, "SizeOfImage", None)
-
-            # Subsystem mapping is not provided by pefile directly; use numeric value.
+            entry_point = int(getattr(optional, "AddressOfEntryPoint", 0) or 0)
+            image_base = int(getattr(optional, "ImageBase", 0) or 0)
             subsystem_raw = getattr(optional, "Subsystem", None)
-            if subsystem_raw is not None:
-                subsystem = str(subsystem_raw)
 
-            dll_chars_raw = getattr(optional, "DllCharacteristics", 0)
-            try:
-                dll_characteristics_val = int(dll_chars_raw)
-                # Interpret common flags if possible.
-                flag_map = {
-                    0x0040: "Dynamic base",
-                    0x0100: "NX compatible",
-                    0x0400: "No SEH",
-                    0x0800: "No CFG",
-                    0x4000: "No Isolation",
-                    0x8000: "No Appcontainer",
-                }
-                for bit, name in flag_map.items():
-                    if dll_characteristics_val & bit:
-                        dll_characteristics.append(name)
-            except (TypeError, ValueError):
-                dll_characteristics = []
+        subsystem = _classify_subsystem(int(subsystem_raw)) if subsystem_raw is not None else None
 
-        # Overlay detection heuristic: overlay is data after the last section.
-        try:
-            pe.parse_data_directories()
-        except Exception:
-            # best-effort
-            pass
-
-        try:
-            # pefile computes overlay size with get_overlay()
-            overlay_data = pe.get_overlay()
-            overlay_present = bool(overlay_data)
-        except Exception:
-            overlay_present = False
-
-        # Digital signature detection: security directory / certificate table.
-        try:
-            security_dir = pe.OPTIONAL_HEADER.DATA_DIRECTORY[
-                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
-            ]
-            # pefile may store .VirtualAddress/.Size
-            sig_size = int(getattr(security_dir, "Size", 0) or 0)
-            digital_signature_present = sig_size > 0
-        except Exception:
-            digital_signature_present = False
-
-        # Rich header detection is complicated; best-effort heuristic.
-        try:
-            # pefile has helper to get_rich_header?
-            if hasattr(pe, "get_rich_header"):
-                rh = pe.get_rich_header()
-                rich_header_present = rh is not None
-            else:
-                rich_header_present = False
-        except Exception:
-            rich_header_present = False
-
-        # Compiler timestamp may not be directly available; best-effort via rich header.
-        if rich_header_present:
-            try:
-                # If pefile exposes rich header metadata
-                rh = pe.get_rich_header() if hasattr(pe, "get_rich_header") else None
-                if isinstance(rh, dict):
-                    compiler_ts = rh.get("timestamp")
-                    compiler_timestamp = self._coerce_timestamp(int(compiler_ts)) if compiler_ts else None
-            except Exception:
-                compiler_timestamp = None
-
-        self._info = PEGeneralInfo(
-            machine=machine_str,
-            timestamp=timestamp_str,
-            entry_point=entry_point,
-            image_base=image_base,
-            subsystem=subsystem,
-            dll_characteristics=dll_characteristics,
-            file_alignment=file_alignment if file_alignment is None else int(file_alignment),
-            section_alignment=section_alignment
-            if section_alignment is None
-            else int(section_alignment),
-            checksum=checksum if checksum is None else int(checksum),
-            number_of_sections=number_of_sections
-            if number_of_sections is None
-            else int(number_of_sections),
-            size_of_image=size_of_image if size_of_image is None else int(size_of_image),
-            overlay_present=overlay_present,
-            digital_signature_present=digital_signature_present,
-            rich_header_present=rich_header_present,
-            compiler_timestamp=compiler_timestamp,
-        )
-
-        self._maybe_display_hashes()
-        self._mark_parsed()
-
-    def display(self) -> None:
-        """Display PE general information in Rich panels/tables."""
-        if self._info is None:
-            if not self._parsed:
-                self.parse()
-            if self._info is None:
-                raise RuntimeError("PEParser has no parsed info to display")
-
-        info = self._info
-
-        table = Table(box=None, show_lines=False)
-        table.add_column("Property", style="bold cyan")
-        table.add_column("Value", style="white")
-
-        table.add_row("Machine", info.machine)
-        table.add_row("Timestamp", info.timestamp or "unknown")
-        table.add_row("Entry Point", hex(info.entry_point))
-        table.add_row("Image Base", hex(info.image_base))
-        table.add_row("Subsystem", info.subsystem or "unknown")
-        table.add_row(
-            "DLL Characteristics",
-            ", ".join(info.dll_characteristics) if info.dll_characteristics else "none",
-        )
-        table.add_row(
-            "File Alignment",
-            str(info.file_alignment) if info.file_alignment is not None else "unknown",
-        )
-        table.add_row(
-            "Section Alignment",
-            str(info.section_alignment)
-            if info.section_alignment is not None
-            else "unknown",
-        )
-        table.add_row(
-            "Checksum",
-            str(info.checksum) if info.checksum is not None else "unknown",
-        )
-        table.add_row(
-            "Sections",
-            str(info.number_of_sections)
-            if info.number_of_sections is not None
-            else "unknown",
-        )
-        table.add_row(
-            "Size Of Image",
-            str(info.size_of_image) if info.size_of_image is not None else "unknown",
-        )
-        table.add_row("Overlay", "Yes" if info.overlay_present else "No")
-        table.add_row(
-            "Signed",
-            "Yes" if info.digital_signature_present else "No",
-        )
-        table.add_row("Rich Header", "Yes" if info.rich_header_present else "No")
-        table.add_row(
-            "Compiler Timestamp",
-            info.compiler_timestamp or "unknown",
-        )
-
-        self._console.print(Panel(table, title="PE General Information", border_style="cyan", padding=(0, 1)))
-
-    def summary(self) -> dict[str, Any]:
-        """Return PE parsing summary."""
-        if self._info is None:
-            if not self._parsed:
-                self.parse()
-            if self._info is None:
-                raise RuntimeError("PEParser summary requested before parse")
-
-        info = self._info
         return {
-            "type": "PE",
-            "machine": info.machine,
-            "timestamp": info.timestamp,
-            "entry_point": info.entry_point,
-            "image_base": info.image_base,
-            "subsystem": info.subsystem,
-            "dll_characteristics": info.dll_characteristics,
-            "file_alignment": info.file_alignment,
-            "section_alignment": info.section_alignment,
-            "checksum": info.checksum,
-            "number_of_sections": info.number_of_sections,
-            "size_of_image": info.size_of_image,
-            "overlay_present": info.overlay_present,
-            "digital_signature_present": info.digital_signature_present,
-            "rich_header_present": info.rich_header_present,
-            "compiler_timestamp": info.compiler_timestamp,
-            "hashes": (self._ensure_hashes().to_dict() if self._hashes is not None else None),
+            "hashes": hashes.to_dict(),
+            "compile_timestamp": timestamp,
+            "machine_type": machine_arch,
+            "subsystem": subsystem,
+            "entry_point": entry_point,
+            "image_base": image_base,
+            "number_of_sections": number_of_sections,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        """Alias for summary()."""
-        return self.summary()
+    def get_sections(self, filepath: Path | str) -> list[dict[str, Any]]:
+        """Extract PE section information including entropy and RWX flags."""
+        path = Path(filepath)
+        pe = self._load_pe(path)
 
-    def to_json(self) -> str:
-        """Serialize summary to JSON."""
-        return super().to_json()
+        sections: list[dict[str, Any]] = []
+        for section in pe.sections:
+            name = _get_section_name(section)
+            virtual_address = int(getattr(section, "VirtualAddress", 0) or 0)
+            raw_size = int(getattr(section, "SizeOfRawData", 0) or 0)
+            ch = int(getattr(section, "Characteristics", 0) or 0)
 
+            readable, writable, executable = _section_characteristics_to_flags(ch)
+
+            try:
+                raw_data = section.get_data()
+            except Exception:
+                raw_data = b""
+
+            entropy = _shannon_entropy(raw_data)
+            possibly_packed = entropy > 7.0
+
+            sections.append(
+                {
+                    "name": name,
+                    "virtual_address": virtual_address,
+                    "raw_size": raw_size,
+                    "characteristics": {
+                        "readable": readable,
+                        "writable": writable,
+                        "executable": executable,
+                    },
+                    "entropy": entropy,
+                    "possibly_packed": possibly_packed,
+                }
+            )
+
+        return sections
+
+    def get_imports(self, filepath: Path | str) -> dict[str, list[str]]:
+        """Extract imports grouped by DLL name."""
+        path = Path(filepath)
+        pe = self._load_pe(path)
+
+        imports: dict[str, list[str]] = {}
+        try:
+            pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+        except Exception:
+            # If import directory missing, treat as empty.
+            return {}
+
+        if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
+            return {}
+
+        for entry in pe.DIRECTORY_ENTRY_IMPORT:
+            dll_name = getattr(entry, "dll", b"")
+            if isinstance(dll_name, bytes):
+                dll_str = dll_name.decode(errors="replace")
+            else:
+                dll_str = str(dll_name)
+
+            imported_functions: list[str] = []
+            for imp in entry.imports:
+                fn = getattr(imp, "name", None)
+                if fn is None:
+                    continue
+                if isinstance(fn, bytes):
+                    imported_functions.append(fn.decode(errors="replace"))
+                else:
+                    imported_functions.append(str(fn))
+
+            imports[dll_str] = imported_functions
+
+        return imports
+
+    def get_exports(self, filepath: Path | str) -> list[dict[str, Any]]:
+        """Extract export table entries."""
+        path = Path(filepath)
+        pe = self._load_pe(path)
+
+        exports: list[dict[str, Any]] = []
+        try:
+            pe.parse_data_directories(
+                directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"]]
+            )
+        except Exception:
+            return []
+
+        if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+            return []
+
+        directory = pe.DIRECTORY_ENTRY_EXPORT
+        for exp in getattr(directory, "symbols", []) or []:
+            name = getattr(exp, "name", None)
+            if isinstance(name, bytes):
+                export_name = name.decode(errors="replace")
+            elif name is None:
+                export_name = None
+            else:
+                export_name = str(name)
+
+            ordinal = getattr(exp, "ordinal", None)
+            # Address: use exp.address if available.
+            address = getattr(exp, "address", None)
+
+            exports.append({"export_name": export_name, "ordinal": ordinal, "address": address})
+
+        return exports
+
+    def check_anomalies(self, filepath: Path | str) -> list[str]:
+        """Run anomaly checks and return a list of descriptive strings."""
+        path = Path(filepath)
+
+        anomalies: list[str] = []
+
+        # Load PE once and do best-effort header mismatch checks.
+        try:
+            pe = self._load_pe(path)
+        except ValueError as exc:
+            # Preserve expected behavior for non-PE.
+            raise
+
+        # 1) Entropy rule
+        try:
+            for section in pe.sections:
+                try:
+                    raw_data = section.get_data()
+                except Exception:
+                    raw_data = b""
+                entropy = _shannon_entropy(raw_data)
+                if entropy > 7.2:
+                    anomalies.append(
+                        f"Section entropy high (>7.2): { _get_section_name(section) } entropy={entropy:.4f}"
+                    )
+        except Exception:
+            pass
+
+        # 2) No imports
+        imports = {}
+        try:
+            imports = self.get_imports(path)
+        except Exception:
+            imports = {}
+        if not imports:
+            anomalies.append("No imports found (suspicious)")
+
+        # 3) Mismatched headers (best-effort)
+        try:
+            optional = getattr(pe, "OPTIONAL_HEADER", None)
+            if optional is not None:
+                addr_entry = int(getattr(optional, "AddressOfEntryPoint", 0) or 0)
+                # Entry point should land in some section RVA range.
+                entry_in_section = False
+                for section in pe.sections:
+                    va = int(getattr(section, "VirtualAddress", 0) or 0)
+                    vsz = int(getattr(section, "Misc_VirtualSize", 0) or 0)
+                    if vsz == 0:
+                        vsz = int(getattr(section, "SizeOfRawData", 0) or 0)
+                    if va <= addr_entry < (va + vsz):
+                        entry_in_section = True
+                        break
+                if not entry_in_section and addr_entry != 0:
+                    anomalies.append("Entry point does not fall within any section (header mismatch)")
+        except Exception:
+            pass
+
+        # 4) Non-standard section names
+        try:
+            standard_names = {".text", ".rdata", ".data", ".idata", ".rsrc", ".reloc", ".bss"}
+            for section in pe.sections:
+                name = _get_section_name(section)
+                if not name.startswith(".") or name.lower() not in standard_names:
+                    # Keep as warning for any unknown names; packers often add .packed/.xdata etc.
+                    if name.strip() and len(name) > 0:
+                        anomalies.append(f"Non-standard section name: {name}")
+        except Exception:
+            pass
+
+        # 5) W^X violation (writable and executable)
+        try:
+            for section in pe.sections:
+                ch = int(getattr(section, "Characteristics", 0) or 0)
+                readable, writable, executable = _section_characteristics_to_flags(ch)
+                if writable and executable:
+                    anomalies.append(
+                        f"W^X violation: section { _get_section_name(section) } is writable and executable"
+                    )
+        except Exception:
+            pass
+
+        return anomalies
+
+    def generate_report(self, filepath: Path | str, *, options: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Generate a Rich report or JSON report.
+
+        Args:
+            filepath: PE file path.
+            options:
+              - sections/imports/exports/full/json/console toggles.
+
+        Returns:
+            Parsed data structure (JSON-serializable).
+        """
+        opts = options or {}
+        want_sections = bool(opts.get("sections"))
+        want_imports = bool(opts.get("imports"))
+        want_exports = bool(opts.get("exports"))
+        want_full = bool(opts.get("full"))
+        want_json = bool(opts.get("json"))
+        console: Console = opts.get("console") or self._console
+
+        data: dict[str, Any] = {}
+
+        metadata = self.get_metadata(filepath)
+        sections = self.get_sections(filepath)
+        imports = self.get_imports(filepath)
+        exports = self.get_exports(filepath)
+        anomalies = self.check_anomalies(filepath)
+
+        data.update(
+            {
+                "metadata": metadata,
+                "sections": sections,
+                "imports": imports,
+                "exports": exports,
+                "anomalies": anomalies,
+            }
+        )
+
+        if want_json:
+            return data
+
+        # Rich output
+        def _color_line(msg: str) -> str:
+            lowered = msg.lower()
+            if any(k in lowered for k in ("suspicious", "violation", ">7.2", "entropy high")):
+                return f"[red]{msg}[/red]"
+            if any(k in lowered for k in ("warning", "non-standard", "mismatch", "no imports")):
+                return f"[yellow]{msg}[/yellow]"
+            return f"[green]{msg}[/green]"
+
+        if want_full or want_sections:
+            t = Table(title="Sections", box=None, show_edge=False)
+            t.add_column("Name", style="bold")
+            t.add_column("VA", style="cyan")
+            t.add_column("Raw Size", style="white")
+            t.add_column("Entropy", style="magenta")
+            t.add_column("Flags", style="white")
+
+            for s in sections:
+                flags = []
+                if s["characteristics"]["readable"]:
+                    flags.append("R")
+                if s["characteristics"]["writable"]:
+                    flags.append("W")
+                if s["characteristics"]["executable"]:
+                    flags.append("X")
+                packed = " (possibly packed)" if s.get("possibly_packed") else ""
+                entropy_text = f"{s['entropy']:.4f}{packed}"
+                t.add_row(s["name"], hex(int(s["virtual_address"])), str(s["raw_size"]), entropy_text, "/".join(flags))
+
+            console.print(Panel(t, border_style="cyan", padding=(0, 1)))
+
+        if want_full or want_imports:
+            t = Table(title="Imports", box=None, show_edge=False)
+            t.add_column("DLL", style="bold cyan")
+            t.add_column("Functions", style="white")
+
+            if not imports:
+                t.add_row("<none>", "[yellow]none[/yellow]")
+            else:
+                for dll, funcs in imports.items():
+                    suspicious_hits = [f for f in funcs if f in SUSPICIOUS_IMPORTS]
+                    funcs_text = ", ".join(funcs[:50]) + (", ..." if len(funcs) > 50 else "")
+                    if suspicious_hits:
+                        funcs_text = f"[red]{funcs_text}[/red]"  # mark whole row red
+                    t.add_row(dll, funcs_text)
+
+            console.print(Panel(t, border_style="cyan", padding=(0, 1)))
+
+        if want_full or want_exports:
+            t = Table(title="Exports", box=None, show_edge=False)
+            t.add_column("Name", style="bold")
+            t.add_column("Ordinal", style="cyan")
+            t.add_column("Address", style="white")
+
+            if not exports:
+                t.add_row("<none>", "-", "-")
+            else:
+                for e in exports:
+                    name = e.get("export_name") or "<noname>"
+                    ordinal = e.get("ordinal")
+                    address = e.get("address")
+                    addr_text = hex(int(address)) if isinstance(address, int) else str(address)
+                    t.add_row(str(name), str(ordinal), addr_text)
+
+            console.print(Panel(t, border_style="cyan", padding=(0, 1)))
+
+        # Metadata + anomalies always in full mode
+        if want_full:
+            t = Table(title="Metadata", box=None, show_edge=False)
+            t.add_column("Property", style="bold cyan")
+            t.add_column("Value", style="white")
+
+            hashes = metadata.get("hashes", {})
+            t.add_row("MD5", hashes.get("md5") or "")
+            t.add_row("SHA1", hashes.get("sha1") or "")
+            t.add_row("SHA256", hashes.get("sha256") or "")
+            t.add_row("Compile timestamp", metadata.get("compile_timestamp") or "unknown")
+            t.add_row("Machine type", metadata.get("machine_type") or "unknown")
+            t.add_row("Subsystem", metadata.get("subsystem") or "unknown")
+            t.add_row("Entry point", hex(int(metadata.get("entry_point") or 0)))
+            t.add_row("Image base", hex(int(metadata.get("image_base") or 0)))
+            t.add_row("# Sections", str(metadata.get("number_of_sections") or "unknown"))
+
+            console.print(Panel(t, border_style="cyan", padding=(0, 1)))
+
+            an_panel = Panel(
+                "\n".join(_color_line(a) for a in anomalies) if anomalies else "[green]No anomalies detected.[/green]",
+                title="Anomalies",
+                border_style="red" if anomalies else "green",
+                padding=(1, 2),
+            )
+            console.print(an_panel)
+
+        return data
 

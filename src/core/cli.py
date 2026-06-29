@@ -364,29 +364,20 @@ def hexdump_cmd(
 
 
 # ---------------------------------------------------------------------------
-# pe  (placeholder)
+# pe (implemented in separate module)
 # ---------------------------------------------------------------------------
 
 
-@cli.command("pe")
-@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
-def pe_cmd(file: Path) -> None:
-    """Analyze a PE (Portable Executable) binary. [coming soon]
+# Import-time wiring only; the command itself lives in cli_pe.py.
+from reverse_engineering.binary_analysis.cli_pe import pe_cmd  # noqa: E402,F401
 
-    \b
-    Planned features:
-      sections, imports, exports, entropy, anomaly detection
-    """
-    console = Console()
-    target = _validate_file(console, file)
-    if target is None:
-        raise click.Abort()
-    _print_coming_soon(console, "PE")
+cli.add_command(pe_cmd)
 
 
 # ---------------------------------------------------------------------------
 # elf  (placeholder)
 # ---------------------------------------------------------------------------
+
 
 
 @cli.command("elf")
