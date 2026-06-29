@@ -173,19 +173,19 @@ pip install -r requirements.txt
 Hash a file
 
 ```bash
-python -m src.core.cli hash malware.exe
+rft hash malware.exe
 ```
 
 Identify file type
 
 ```bash
-python -m src.core.cli identify malware.exe
+rft identify malware.exe
 ```
 
 Generate Hex Dump
 
 ```bash
-python -m src.core.cli hexdump malware.exe
+rft hexdump malware.exe
 ```
 
 ---
