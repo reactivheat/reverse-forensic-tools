@@ -228,9 +228,10 @@ class BinaryParserBase(abc.ABC):
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
 
-        md5_h = hashlib.md5()
-        sha1_h = hashlib.sha1()
+        md5_h = hashlib.md5(usedforsecurity=False)  # nosec B324
+        sha1_h = hashlib.sha1(usedforsecurity=False)  # nosec B324
         sha256_h = hashlib.sha256()
+
 
         try:
             with self._file_path.open("rb") as f:

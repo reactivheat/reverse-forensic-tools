@@ -152,9 +152,10 @@ class PEAnalyzer:
         # Keep local to this module (avoid cross-dependencies).
         import hashlib
 
-        md5_h = hashlib.md5()
-        sha1_h = hashlib.sha1()
+        md5_h = hashlib.md5(usedforsecurity=False)  # nosec B324
+        sha1_h = hashlib.sha1(usedforsecurity=False)  # nosec B324
         sha256_h = hashlib.sha256()
+
         chunk = 1024 * 1024
 
         try:
