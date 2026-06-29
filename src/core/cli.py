@@ -18,9 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover
 # All runtime imports happen lazily inside command handlers so that
 # `rft --help` always works even if optional deps (e.g. python-magic) are absent.
 if TYPE_CHECKING:
-    from utils.hash_calculator import HashCalculator, HashResult
-    from utils.file_identifier import FileIdentifier, FileIdentification
-    from utils.hex_dump_viewer import HexDumpViewer, HexDumpConfig, HexDumpSummary
+    from utils.hex_dump_viewer import HexDumpConfig
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -141,10 +139,11 @@ def hash_cmd(
       rft hash malware.exe --no-progress
     """
     # --- Lazy imports ---
-    from utils.hash_calculator import HashCalculator
+    from rich.table import Table
+
     from core.config_manager import ConfigManager
     from core.logger import LoggerManager
-    from rich.table import Table
+    from utils.hash_calculator import HashCalculator
 
     console = Console()
     logger = LoggerManager().get_logger("rf_tools.cli")
@@ -218,9 +217,10 @@ def identify_cmd(file: Path, no_table: bool, as_json: bool) -> None:
       rft identify suspicious.bin --json
     """
     # --- Lazy imports ---
-    from utils.file_identifier import FileIdentifier
-    from core.logger import LoggerManager
     import json as _json
+
+    from core.logger import LoggerManager
+    from utils.file_identifier import FileIdentifier
 
     console = Console()
     logger = LoggerManager().get_logger("rf_tools.cli")
@@ -303,8 +303,8 @@ def hexdump_cmd(
       rft hexdump malware.exe --output dump.txt
     """
     # --- Lazy imports ---
-    from utils.hex_dump_viewer import HexDumpViewer, HexDumpConfig
     from core.logger import LoggerManager
+    from utils.hex_dump_viewer import HexDumpConfig, HexDumpViewer
 
     console = Console()
     logger = LoggerManager().get_logger("rf_tools.cli")

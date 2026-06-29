@@ -1,9 +1,8 @@
-import json
 from pathlib import Path
 
 import pytest
 
-from src.utils.hex_dump_viewer import HexDumpViewer, HexDumpConfig
+from src.utils.hex_dump_viewer import HexDumpConfig, HexDumpViewer
 
 
 @pytest.mark.parametrize("bytes_per_line", [1, 8, 16])

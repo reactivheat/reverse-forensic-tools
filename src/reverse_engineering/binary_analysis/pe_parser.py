@@ -12,7 +12,6 @@ from rich.table import Table
 
 from core.logger import setup_logger
 
-
 SUSPICIOUS_IMPORTS = {
     "VirtualAlloc",
     "WriteProcessMemory",
@@ -340,7 +339,7 @@ class PEAnalyzer:
         # Load PE once and do best-effort header mismatch checks.
         try:
             pe = self._load_pe(path)
-        except ValueError as exc:
+        except ValueError:
             # Preserve expected behavior for non-PE.
             raise
 

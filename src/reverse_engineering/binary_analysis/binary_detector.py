@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from core.logger import setup_logger
 from core.config_manager import ConfigManager
+from core.logger import setup_logger
 from utils.file_identifier import FileIdentifier
 
 
@@ -58,7 +58,8 @@ class BinaryDetector:
         # https://en.wikipedia.org/wiki/Mach-O
         if len(magic_bytes) >= 4:
             m = int.from_bytes(magic_bytes[:4], byteorder="big", signed=False)
-            l = int.from_bytes(magic_bytes[:4], byteorder="little", signed=False)
+            magic_le = int.from_bytes(magic_bytes[:4], byteorder="little", signed=False)
+
             mach_magics = {
                 0xFEEDFACE,
                 0xCEFAEDFE,
@@ -67,8 +68,14 @@ class BinaryDetector:
             }
             # For FAT binaries/universal:
             fat_magics = {0xCAFEBABE, 0xBEBAFECA}
-            if m in mach_magics or l in mach_magics or m in fat_magics or l in fat_magics:
+            if (
+                m in mach_magics
+                or magic_le in mach_magics
+                or m in fat_magics
+                or magic_le in fat_magics
+            ):
                 return DetectedBinary(kind="Mach-O", confidence=0.9, mime_type=None, extension_hint=None)
+
 
         return DetectedBinary(kind="Unknown", confidence=0.0, mime_type=None, extension_hint=None)
 
