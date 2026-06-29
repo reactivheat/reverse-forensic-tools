@@ -1,2 +1,4 @@
-__version__ = "1.0.0"
-__author__ = "Efraim Wattimury"
+"""reverse-forensic-tools source package."""
+
+__all__ = []
+

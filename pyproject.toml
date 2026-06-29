@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 [project.scripts]
-rf-tools = "core.cli:main"
+rft = "core.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

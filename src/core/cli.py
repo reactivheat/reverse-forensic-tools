@@ -1,287 +1,458 @@
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from rich.console import Console
 from rich.panel import Panel
 
-from core.config_manager import ConfigManager
-from core.logger import LoggerManager
-from utils import FileIdentifier, HashCalculator, HexDumpViewer, HexDumpConfig
+try:
+    import click  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    raise SystemExit(
+        "Missing dependency: click. Install with `pip install -e .`"
+    )
+
+# TYPE_CHECKING-only imports for type hints — never executed at runtime.
+# All runtime imports happen lazily inside command handlers so that
+# `rft --help` always works even if optional deps (e.g. python-magic) are absent.
+if TYPE_CHECKING:
+    from utils.hash_calculator import HashCalculator, HashResult
+    from utils.file_identifier import FileIdentifier, FileIdentification
+    from utils.hex_dump_viewer import HexDumpViewer, HexDumpConfig, HexDumpSummary
+
+# ---------------------------------------------------------------------------
+# Banner
+# ---------------------------------------------------------------------------
+
+ASCII_BANNER = (
+    " ██████╗███████╗██████╗ ██████╗  █████╗ \n"
+    "██╔════╝██╔════╝██╔══██╗██╔══██╗██╔══██╗\n"
+    "██║     █████╗  ██║  ██║██████╔╝███████║\n"
+    "██║     ██╔══╝  ██║  ██║██╔══██╗██╔══██║\n"
+    "╚██████╗███████╗██████╔╝██║  ██║██║  ██║\n"
+    " ╚═════╝╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝\n"
+)
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 
-
-class ReverseForensicCLI:
-    """Main CLI entrypoint for Reverse Forensic Tools."""
-
-    def __init__(self, console: Optional[Console] = None) -> None:
-        """Initialize the CLI.
-
-        Args:
-            console: Optional Rich console.
-        """
-
-        self._console = console or Console()
-        self._config = ConfigManager()
-        self._logger = LoggerManager().get_logger("rf_tools.cli")
-        self._hash = HashCalculator(console=self._console)
-        self._identifier = FileIdentifier(console=self._console)
-        self._hexdump = HexDumpViewer(console=self._console)
-
-    def print_banner(self) -> None:
-        """Print the application banner."""
-
-        ascii_art = (
-            " ██████╗███████╗██████╗ ██████╗  █████╗\n"
-            "██╔════╝██╔════╝██╔══██╗██╔══██╗██╔══██╗\n"
-            "██║     █████╗  ██║  ██║██████╔╝███████║\n"
-            "██║     ██╔══╝  ██║  ██║██╔══██╗██╔══██║\n"
-            "╚██████╗███████╗██████╔╝██║  ██║ ██║  ██║\n"
-            " ╚═════╝╚══════╝╚═════╝ ╚═╝  ╚═╝  ╚═╝  ╚═╝\n"
-        )
-
-        banner = Panel.fit(
-            f"[bold cyan]{ascii_art}[/bold cyan]\n\n"
-            f"[bold]Operator Cedra[/bold]\n"
-            f"[bold]Reverse Forensic Tools[/bold]\n",
-            title="[bold]Operator Cedra[/bold]",
-            subtitle="Stand by Rules",
-            border_style="blue",
+def _print_error(console: Console, title: str, message: str) -> None:
+    """Render a red error panel — never a raw Python traceback."""
+    console.print(
+        Panel(
+            f"[bold]{title}[/bold]\n\n{message}",
+            title="[red]Error[/red]",
+            border_style="red",
             padding=(1, 2),
         )
-        self._console.print(banner)
+    )
 
-    def build_parser(self) -> argparse.ArgumentParser:
-        """Build the CLI argument parser."""
 
-        parser = argparse.ArgumentParser(
-            prog="rf-tools",
-            description="Reverse Forensic Tools - Operator Cedra",
+def _print_coming_soon(console: Console, cmd: str) -> None:
+    console.print(
+        Panel(
+            f"[bold yellow]{cmd}[/bold yellow] analysis module is coming soon.\n\n"
+            "[dim]Track progress at: https://github.com/reactivheat/reverse-forensic-tools[/dim]",
+            title="[yellow]Coming Soon[/yellow]",
+            border_style="yellow",
+            padding=(1, 2),
         )
-        parser.add_argument(
-            "--no-banner",
-            action="store_true",
-            help="Do not show the banner.",
+    )
+
+
+def _validate_file(console: Console, path: Path) -> Optional[Path]:
+    """Resolve and validate a file path; return None and print error on failure."""
+    try:
+        resolved = path.expanduser().resolve()
+    except Exception:
+        resolved = path
+
+    if not resolved.exists():
+        _print_error(console, "File not found", str(resolved))
+        return None
+    if not resolved.is_file():
+        _print_error(console, "Invalid input", f"Not a file: {resolved}")
+        return None
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# CLI group
+# ---------------------------------------------------------------------------
+
+
+@click.group(
+    context_settings={"help_option_names": ["--help", "-h"]},
+    invoke_without_command=False,
+)
+@click.version_option(version="1.0.0", prog_name="rft")
+def cli() -> None:
+    """Reverse Forensic Tools — by Operator Cedra.
+
+    \b
+    Production-grade toolkit for Reverse Engineering, DFIR,
+    and Malware Analysis on Linux/Parrot OS.
+
+    \b
+    Run `rft <command> --help` for detailed usage.
+    """
+
+
+# ---------------------------------------------------------------------------
+# hash
+# ---------------------------------------------------------------------------
+
+
+@cli.command("hash")
+@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+@click.option(
+    "--algos",
+    default=None,
+    help="Comma-separated algorithms, e.g. sha256,sha1,md5",
+)
+@click.option(
+    "--chunk-size",
+    default=1024 * 1024,
+    show_default=True,
+    type=int,
+    help="Read chunk size in bytes.",
+)
+@click.option(
+    "--no-progress",
+    is_flag=True,
+    help="Disable the Rich progress bar.",
+)
+def hash_cmd(
+    file: Path,
+    algos: Optional[str],
+    chunk_size: int,
+    no_progress: bool,
+) -> None:
+    """Compute cryptographic hashes for FILE.
+
+    \b
+    Examples:
+      rft hash malware.exe
+      rft hash malware.exe --algos sha256,md5
+      rft hash malware.exe --no-progress
+    """
+    # --- Lazy imports ---
+    from utils.hash_calculator import HashCalculator
+    from core.config_manager import ConfigManager
+    from core.logger import LoggerManager
+    from rich.table import Table
+
+    console = Console()
+    logger = LoggerManager().get_logger("rf_tools.cli")
+    calculator = HashCalculator(console=console)
+
+    target = _validate_file(console, file)
+    if target is None:
+        raise click.Abort()
+
+    config = ConfigManager()
+    algorithms = (
+        [a.strip() for a in algos.split(",") if a.strip()]
+        if algos
+        else config.get("hash.algorithms", ["md5", "sha1", "sha256"])
+    )
+
+    try:
+        result = calculator.compute_hashes(
+            target,
+            algorithms=algorithms,
+            chunk_size=chunk_size,
+            show_progress=not no_progress,
+        )
+    except PermissionError as exc:
+        _print_error(console, "Permission denied", str(exc))
+        raise click.Abort()
+    except FileNotFoundError as exc:
+        _print_error(console, "File not found", str(exc))
+        raise click.Abort()
+    except ValueError as exc:
+        _print_error(console, "Invalid argument", str(exc))
+        raise click.Abort()
+    except Exception as exc:
+        logger.exception("hash command failed")
+        _print_error(console, "Hash failed", str(exc))
+        raise click.Abort()
+
+    table = Table(title=f"Hashes — {target.name}", box=None, show_edge=False)
+    table.add_column("Algorithm", style="bold cyan", min_width=10)
+    table.add_column("Digest", style="white")
+
+    for algo, digest in result.hashes.items():
+        table.add_row(algo.upper(), digest)
+
+    table.add_section()
+    table.add_row("[dim]Size (bytes)[/dim]", str(result.size_bytes))
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# identify
+# ---------------------------------------------------------------------------
+
+
+@cli.command("identify")
+@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+@click.option("--no-table", is_flag=True, help="Print raw values instead of a Rich table.")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output identification result as JSON.",
+)
+def identify_cmd(file: Path, no_table: bool, as_json: bool) -> None:
+    """Identify file type using libmagic and magic bytes.
+
+    \b
+    Examples:
+      rft identify suspicious.bin
+      rft identify suspicious.bin --json
+    """
+    # --- Lazy imports ---
+    from utils.file_identifier import FileIdentifier
+    from core.logger import LoggerManager
+    import json as _json
+
+    console = Console()
+    logger = LoggerManager().get_logger("rf_tools.cli")
+
+    target = _validate_file(console, file)
+    if target is None:
+        raise click.Abort()
+
+    try:
+        identifier = FileIdentifier(console=console)
+    except RuntimeError as exc:
+        _print_error(
+            console,
+            "libmagic not available",
+            f"{exc}\n\n[dim]Install: sudo apt install libmagic1[/dim]",
+        )
+        raise click.Abort()
+
+    try:
+        result = identifier.identify(
+            target,
+            show_table=(not no_table and not as_json),
+        )
+    except PermissionError as exc:
+        _print_error(console, "Permission denied", str(exc))
+        raise click.Abort()
+    except FileNotFoundError as exc:
+        _print_error(console, "File not found", str(exc))
+        raise click.Abort()
+    except Exception as exc:
+        logger.exception("identify command failed")
+        _print_error(console, "Identify failed", str(exc))
+        raise click.Abort()
+
+    if as_json:
+        console.print(
+            _json.dumps(FileIdentifier.to_dict(result), indent=2)
         )
 
-        subparsers = parser.add_subparsers(dest="command", required=True)
 
-        # hash
-        p_hash = subparsers.add_parser("hash", help="Compute file hashes")
-        p_hash.add_argument("path", type=str, help="Path to the input file")
-        p_hash.add_argument(
-            "--algos",
-            type=str,
-            default=None,
-            help="Comma-separated algorithms (e.g., sha256,sha1,md5)",
-        )
-        p_hash.add_argument(
-            "--chunk-size",
-            type=int,
-            default=1024 * 1024,
-            help="Read chunk size in bytes",
-        )
-        p_hash.add_argument(
-            "--no-progress",
-            action="store_true",
-            help="Disable progress bar.",
-        )
+# ---------------------------------------------------------------------------
+# hexdump
+# ---------------------------------------------------------------------------
 
-        # identify
-        p_ident = subparsers.add_parser(
-            "identify", help="Identify file type (libmagic + bytes)"
-        )
-        p_ident.add_argument("path", type=str, help="Path to the input file")
-        p_ident.add_argument(
-            "--no-table",
-            action="store_true",
-            help="Disable Rich table output.",
-        )
 
-        # hexdump
-        p_hex = subparsers.add_parser("hexdump", help="Render and save hex dump")
-        p_hex.add_argument("path", type=str, help="Path to the input file")
-        p_hex.add_argument(
-            "--output",
-            type=str,
-            default=None,
-            help="Output filename to write under data/output/",
-        )
-        p_hex.add_argument(
-            "--bytes-per-line",
-            type=int,
-            default=None,
-            help="Bytes per line (overrides config).",
-        )
-        p_hex.add_argument(
-            "--offset-width",
-            type=int,
-            default=None,
-            help="Offset width in hex digits (overrides config).",
-        )
-        p_hex.add_argument(
-            "--max-lines",
-            type=int,
-            default=None,
-            help="Maximum lines to render/export (overrides config).",
-        )
-        p_hex.add_argument(
-            "--no-panel",
-            action="store_true",
-            help="Disable Rich panel wrapper.",
-        )
-        p_hex.add_argument(
-            "--export-lines",
-            type=int,
-            default=None,
-            help="Maximum lines to export when output is set.",
+@cli.command("hexdump")
+@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+@click.option(
+    "--bytes",
+    "bytes_per_line",
+    default=None,
+    type=int,
+    help="Bytes displayed per line (default: 16 from config).",
+)
+@click.option(
+    "--lines",
+    "max_lines",
+    default=None,
+    type=int,
+    help="Maximum lines to display (default: 200 from config).",
+)
+@click.option(
+    "--output",
+    default=None,
+    type=str,
+    help="Save dump to data/output/<OUTPUT> instead of displaying.",
+)
+def hexdump_cmd(
+    file: Path,
+    bytes_per_line: Optional[int],
+    max_lines: Optional[int],
+    output: Optional[str],
+) -> None:
+    """Display or export a hex dump of FILE.
+
+    \b
+    Examples:
+      rft hexdump malware.exe
+      rft hexdump malware.exe --bytes 32 --lines 50
+      rft hexdump malware.exe --output dump.txt
+    """
+    # --- Lazy imports ---
+    from utils.hex_dump_viewer import HexDumpViewer, HexDumpConfig
+    from core.logger import LoggerManager
+
+    console = Console()
+    logger = LoggerManager().get_logger("rf_tools.cli")
+    viewer = HexDumpViewer(console=console)
+
+    target = _validate_file(console, file)
+    if target is None:
+        raise click.Abort()
+
+    # Build config override only when the user explicitly passed options.
+    config: Optional[HexDumpConfig] = None
+    if bytes_per_line is not None or max_lines is not None:
+        default_cfg = viewer._load_default_config()
+        config = HexDumpConfig(
+            bytes_per_line=bytes_per_line if bytes_per_line is not None else default_cfg.bytes_per_line,
+            offset_width=default_cfg.offset_width,
+            max_lines=max_lines if max_lines is not None else default_cfg.max_lines,
         )
 
-        return parser
-
-    def handle_hash(self, args: argparse.Namespace) -> int:
-        """Handle the hash command."""
-
-        path = Path(args.path)
-        if not path.exists():
-            self._console.print(f"[bold red]File not found:[/bold red] {path}")
-            return 2
-
-        algos = None
-        if args.algos:
-            algos = [a.strip() for a in args.algos.split(",") if a.strip()]
-
-        try:
-            result = self._hash.compute_hashes(
-                path,
-                algorithms=algos
-                if algos
-                else self._config.get(
-                    "hash.algorithms", ["md5", "sha1", "sha256"]
-                ),
-                chunk_size=args.chunk_size,
-                show_progress=not args.no_progress,
-            )
-        except Exception as exc:  # pragma: no cover
-            self._console.print(f"[bold red]Hash failed:[/bold red] {exc}")
-            self._logger.exception("hash command failed")
-            return 1
-
-        for algo, digest in result.hashes.items():
-            self._console.print(f"[cyan]{algo}[/cyan]: {digest}")
-        return 0
-
-    def handle_identify(self, args: argparse.Namespace) -> int:
-        """Handle the identify command."""
-
-        path = Path(args.path)
-        if not path.exists():
-            self._console.print(f"[bold red]File not found:[/bold red] {path}")
-            return 2
-
-        try:
-            self._identifier.identify(path, show_table=not args.no_table)
-        except Exception as exc:  # pragma: no cover
-            self._console.print(f"[bold red]Identify failed:[/bold red] {exc}")
-            self._logger.exception("identify command failed")
-            return 1
-        return 0
-
-    def handle_hexdump(self, args: argparse.Namespace) -> int:
-        """Handle the hexdump command."""
-
-        # HexDumpConfig is part of the public utils API.
-        from utils import HexDumpConfig
-
-
-
-
-        path = Path(args.path)
-        if not path.exists():
-            self._console.print(f"[bold red]File not found:[/bold red] {path}")
-            return 2
-
-        config = None
-        if (
-            args.bytes_per_line is not None
-            or args.offset_width is not None
-            or args.max_lines is not None
-        ):
-            # Read defaults from config/config.yaml via viewer.
-            default_config = self._hexdump._load_default_config()
-
-            config = HexDumpConfig(
-                bytes_per_line=args.bytes_per_line
-                if args.bytes_per_line is not None
-                else default_config.bytes_per_line,
-                offset_width=args.offset_width
-                if args.offset_width is not None
-                else default_config.offset_width,
-                max_lines=args.max_lines
-                if args.max_lines is not None
-                else default_config.max_lines,
-            )
-
-        try:
-            truncated = self._hexdump.display_dump(
-                path,
+    try:
+        if output:
+            summary = viewer.save_dump(
+                target,
+                output_filename=output,
                 config=config,
-                show_panel=not args.no_panel,
             )
-            if args.output:
-                summary = self._hexdump.save_dump(
-                    path,
-                    output_filename=args.output,
-                    config=config,
-                    export_lines=args.export_lines,
+            console.print(f"[green]Saved:[/green] {summary.export_path}")
+            if summary.truncated:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Output truncated "
+                    f"({summary.total_lines} total lines, "
+                    f"{summary.bytes_per_line} bytes/line)."
                 )
-                self._console.print(
-                    f"[green]Saved:[/green] {summary.export_path}"
-                )
-                if summary.truncated:
-                    self._console.print(
-                        "[yellow]Warning:[/yellow] Export was truncated."
-                    )
-                return 0
-
+        else:
+            truncated = viewer.display_dump(
+                target,
+                config=config,
+                show_panel=True,
+                title=f"Hex Dump — {target.name}",
+            )
             if truncated:
-                self._console.print(
-                    "[yellow]Warning:[/yellow] Display output was truncated."
+                console.print(
+                    "[yellow]Warning:[/yellow] Display truncated. "
+                    "Use [bold]--lines N[/bold] or [bold]--output FILE[/bold] for full dump."
                 )
-            return 0
-        except Exception as exc:  # pragma: no cover
-            self._console.print(f"[bold red]Hexdump failed:[/bold red] {exc}")
-            self._logger.exception("hexdump command failed")
-            return 1
 
-    def run(self, argv: Optional[list[str]] = None) -> int:
-        """Run the CLI."""
+    except ValueError as exc:
+        _print_error(console, "Invalid argument", str(exc))
+        raise click.Abort()
+    except PermissionError as exc:
+        _print_error(console, "Permission denied", str(exc))
+        raise click.Abort()
+    except Exception as exc:
+        logger.exception("hexdump command failed")
+        _print_error(console, "Hexdump failed", str(exc))
+        raise click.Abort()
 
-        parser = self.build_parser()
-        args = parser.parse_args(argv)
 
-        if not getattr(args, "no_banner", False):
-            self.print_banner()
+# ---------------------------------------------------------------------------
+# pe  (placeholder)
+# ---------------------------------------------------------------------------
 
-        command = str(args.command)
-        if command == "hash":
-            return self.handle_hash(args)
-        if command == "identify":
-            return self.handle_identify(args)
-        if command == "hexdump":
-            return self.handle_hexdump(args)
 
-        self._console.print(f"[bold red]Unknown command:[/bold red] {command}")
-        return 2
+@cli.command("pe")
+@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+def pe_cmd(file: Path) -> None:
+    """Analyze a PE (Portable Executable) binary. [coming soon]
+
+    \b
+    Planned features:
+      sections, imports, exports, entropy, anomaly detection
+    """
+    console = Console()
+    target = _validate_file(console, file)
+    if target is None:
+        raise click.Abort()
+    _print_coming_soon(console, "PE")
+
+
+# ---------------------------------------------------------------------------
+# elf  (placeholder)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("elf")
+@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+def elf_cmd(file: Path) -> None:
+    """Analyze an ELF binary. [coming soon]
+
+    \b
+    Planned features:
+      sections, symbols, dynamic deps, security mitigations
+    """
+    console = Console()
+    target = _validate_file(console, file)
+    if target is None:
+        raise click.Abort()
+    _print_coming_soon(console, "ELF")
+
+
+# ---------------------------------------------------------------------------
+# version
+# ---------------------------------------------------------------------------
+
+
+@cli.command("version")
+def version_cmd() -> None:
+    """Show version and build information."""
+    console = Console()
+    console.print(
+        Panel(
+            "[bold cyan]reverse-forensic-tools[/bold cyan] [bold]v1.0.0[/bold]\n"
+            "[dim]Python:[/dim] "
+            f"[white]{sys.version.split()[0]}[/white]\n"
+            "[dim]Author:[/dim] [white]Operator Cedra[/white]\n"
+            "[dim]License:[/dim] [white]MIT[/white]",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    """Entry point for rf-tools console script."""
+    """Console script entrypoint — registered as `rft` in pyproject.toml."""
+    console = Console()
 
-    cli = ReverseForensicCLI()
-    code = cli.run()
-    raise SystemExit(code)
+    # Print banner only when help is explicitly requested, not on every run.
+    if any(a in ("--help", "-h") for a in sys.argv[1:]) or len(sys.argv) == 1:
+        console.print(
+            Panel.fit(
+                f"[bold cyan]{ASCII_BANNER}[/bold cyan]\n"
+                "[bold white]Operator Cedra[/bold white]  "
+                "[dim]|[/dim]  "
+                "[bold]Reverse Forensic Tools[/bold]",
+                title="[bold blue]Operator Cedra[/bold blue]",
+                subtitle="[dim]Nous frappons dans l'ombre pour protéger la lumière.[/dim]",
+                border_style="blue",
+                padding=(1, 2),
+            )
+        )
 
+    cli(standalone_mode=True)
+
+
+if __name__ == "__main__":
+    main()

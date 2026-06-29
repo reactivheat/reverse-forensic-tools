@@ -1,0 +1,12 @@
+application:
+  name: Reverse Forensic Tools
+  author: Efraim Wattimury
+  brand: Operator Cedra
+
+logging:
+  level: INFO
+
+hex_dump:
+  bytes_per_line: 16
+  offset_width: 8
+  max_lines: 200

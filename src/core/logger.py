@@ -76,9 +76,11 @@ class LoggerManager:
             file_handler = self.create_file_handler(level=level)
             if RotatingFileHandler not in existing_handler_types:
                 file_handler.setFormatter(formatter)
+                file_handler.setLevel(level)
                 root.addHandler(file_handler)
 
             self._configured = True
+
 
     @staticmethod
     def _coerce_log_level(level: object) -> int:
@@ -113,14 +115,16 @@ class LoggerManager:
         paths.log_dir.mkdir(parents=True, exist_ok=True)
 
         # 5MB per file, keep up to 3 backups.
-        return RotatingFileHandler(
+        handler = RotatingFileHandler(
             filename=str(paths.log_file),
             maxBytes=5 * 1024 * 1024,
             backupCount=3,
             encoding="utf-8",
             delay=True,
-            level=level,
         )
+        handler.setLevel(level)
+        return handler
+
 
 
 def setup_logger(name: str = "rf_tools") -> logging.Logger:

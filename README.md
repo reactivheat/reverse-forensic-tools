@@ -200,8 +200,8 @@ python -m src.core.cli hexdump malware.exe
 | Hash Calculator | ✅ |
 | File Identifier | ✅ |
 | Hex Dump Viewer | ✅ |
-| PE Parser | 🚧 |
-| ELF Parser | 🚧 |
+| PE Parser | ✅ |
+| ELF Parser | ✅ |
 | Disassembler | ⏳ |
 | Malware Analysis | ⏳ |
 | Network Forensics | ⏳ |
