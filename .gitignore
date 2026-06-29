@@ -106,3 +106,4 @@ Add-Content .gitignore "`n.venv-312/"
 git add .gitignore
 git commit -m "chore: add .venv-312 to .gitignore"
 git push origin main
+.venv-312/
