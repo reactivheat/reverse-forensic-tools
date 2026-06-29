@@ -5,7 +5,7 @@
 <h1 align="center">reverse-forensic-tools</h1>
 
 <p align="center">
-  <img alt="CI" src="https://github.com/reactivheat/reverse-forensic-tools/actions/workflows/ci.yml/badge.svg" />
+ <img alt="CI" src="https://github.com/reactivheat/reverse-forensic-tools/actions/workflows/ci.yml/badge.svg" />
 
   <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-blue" />
   <img alt="License MIT" src="https://img.shields.io/badge/License-MIT-red" />
