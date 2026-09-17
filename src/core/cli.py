@@ -375,25 +375,14 @@ cli.add_command(pe_cmd)
 
 
 # ---------------------------------------------------------------------------
-# elf  (placeholder)
+# elf (implemented in separate module)
 # ---------------------------------------------------------------------------
 
 
+# Import-time wiring only; the command itself lives in cli_elf.py.
+from reverse_engineering.binary_analysis.cli_elf import elf_cmd  # noqa: E402,F401
 
-@cli.command("elf")
-@click.argument("file", type=click.Path(exists=False, dir_okay=False, path_type=Path))
-def elf_cmd(file: Path) -> None:
-    """Analyze an ELF binary. [coming soon]
-
-    \b
-    Planned features:
-      sections, symbols, dynamic deps, security mitigations
-    """
-    console = Console()
-    target = _validate_file(console, file)
-    if target is None:
-        raise click.Abort()
-    _print_coming_soon(console, "ELF")
+cli.add_command(elf_cmd)
 
 
 # ---------------------------------------------------------------------------
