@@ -54,7 +54,7 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 python_files = "test_*.py"
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
