@@ -46,7 +46,7 @@ jobs:
 
       - name: Install test deps
         run: |
-          pip install pefile rich click pyyaml python-magic pytest
+          pip install pytest
 
       - name: Run pytest
         run: pytest src/tests/ -v --tb=short
