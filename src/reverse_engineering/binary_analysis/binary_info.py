@@ -13,7 +13,7 @@ from core.logger import setup_logger
 from reverse_engineering.binary_analysis.base_parser import BinaryParserBase
 from reverse_engineering.binary_analysis.binary_detector import BinaryDetector
 from reverse_engineering.binary_analysis.import_parser import ImportParser
-from reverse_engineering.binary_analysis.pe_parser import PEParser
+from reverse_engineering.binary_analysis.pe_parser import PEAnalyzer
 from reverse_engineering.binary_analysis.section_parser import SectionParser
 
 
@@ -44,7 +44,7 @@ class BinaryInfo:
     parser(s) for the detected type.
 
     Currently implemented:
-      - PE: PEParser + SectionParser + ImportParser
+        - PE: PEAnalyzer + SectionParser + ImportParser
       - Others: detection only (extend with ELF/Mach-O parsers later)
     """
 
@@ -101,7 +101,7 @@ class BinaryInfo:
 
         try:
             if detected_type == "PE":
-                pe_parser = PEParser(self._file_path, console=self._console, config=self._config)
+                pe_analyzer = PEAnalyzer(console=self._console)
                 sec_parser = SectionParser(
                     self._file_path, console=self._console, config=self._config
                 )
@@ -109,7 +109,10 @@ class BinaryInfo:
                     self._file_path, console=self._console, config=self._config
                 )
 
-                self._parsers = [pe_parser, sec_parser, imp_parser]
+                per_parser["PEAnalyzer"] = pe_analyzer.generate_report(
+                    self._file_path, options={"full": True, "json": True}
+                )
+                self._parsers = [sec_parser, imp_parser]
 
                 for parser in self._parsers:
                     parser.validate()
