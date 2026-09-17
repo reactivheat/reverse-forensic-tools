@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.utils.hex_dump_viewer import HexDumpConfig, HexDumpViewer
+from utils.hex_dump_viewer import HexDumpConfig, HexDumpViewer
 
 
 @pytest.mark.parametrize("bytes_per_line", [1, 8, 16])
@@ -15,7 +15,7 @@ def test_hex_dump_viewer_render_limits_lines(tmp_path: Path, bytes_per_line: int
     viewer = HexDumpViewer(console=None)
 
     # Should not raise.
-    viewer.render(sample, config=config, show_panel=False)
+    assert isinstance(viewer.display_dump(sample, config=config, show_panel=False), bool)
 
 
 def test_hex_dump_export_restricts_output_folder(tmp_path: Path) -> None:
@@ -25,8 +25,13 @@ def test_hex_dump_export_restricts_output_folder(tmp_path: Path) -> None:
     viewer = HexDumpViewer(console=None)
 
     # Export with a name is allowed; it should land in data/output.
-    exported = viewer.export(sample, "dump.txt", config=HexDumpConfig(max_lines=1))
-    assert exported.exists()
-    assert "data" in str(exported)
-    assert str(exported).replace("\\", "/").endswith("/data/output/dump.txt")
+    exported = viewer.save_dump(
+        sample,
+        output_filename="dump.txt",
+        config=HexDumpConfig(bytes_per_line=16, offset_width=4, max_lines=1),
+    )
+    assert exported.export_path is not None
+    assert exported.export_path.exists()
+    assert "data" in str(exported.export_path)
+    assert str(exported.export_path).replace("\\", "/").endswith("/data/output/dump.txt")
 
