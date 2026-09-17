@@ -48,8 +48,8 @@ jobs:
         run: |
           pip install pefile rich click pyyaml python-magic pytest
 
-      - name: Run pytest (best-effort)
-        run: pytest src/tests/ -v --tb=short || true
+      - name: Run pytest
+        run: pytest src/tests/ -v --tb=short
 
       - name: Verify CLI --help
         run: rft --help
