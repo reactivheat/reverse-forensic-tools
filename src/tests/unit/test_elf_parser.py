@@ -1,13 +1,15 @@
 import json
 import platform
 import shutil
-import subprocess
+import subprocess  # nosec B404 - compiler commands below use fixed arguments only.
 from pathlib import Path
 
 import pytest
 
-from reverse_engineering.binary_analysis.elf_parser import ELFInfo, ELFParser, ELFSecurityMitigations
-
+from reverse_engineering.binary_analysis.elf_parser import (
+    ELFParser,
+    ELFSecurityMitigations,
+)
 
 COMPILER = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 WSL = shutil.which("wsl.exe")
@@ -35,12 +37,13 @@ def build_elf(tmp_path: Path, name: str, *flags: str) -> Path:
 
     if COMPILER is not None:
         try:
+            # Safe: compiler path, flags, and output paths are explicit; shell is not used.
             subprocess.run(
                 [COMPILER, *flags, str(source), "-o", str(binary)],
                 check=True,
                 capture_output=True,
                 text=True,
-            )
+            )  # nosec B603
             return binary
         except subprocess.CalledProcessError as exc:
             pytest.skip(f"compiler could not build requested ELF: {exc.stderr}")
@@ -49,12 +52,13 @@ def build_elf(tmp_path: Path, name: str, *flags: str) -> Path:
         wsl_source = _windows_path_to_wsl(source)
         wsl_binary = _windows_path_to_wsl(binary)
         try:
+            # Safe: WSL compiler and arguments are explicit; no untrusted shell input is used.
             subprocess.run(
                 [WSL, "-d", "kali-linux", "--", "cc", *flags, str(wsl_source), "-o", str(wsl_binary)],
                 check=True,
                 capture_output=True,
                 text=True,
-            )
+            )  # nosec B603
             if not binary.exists():
                 raise OSError(f"WSL compiler did not produce {binary}")
             return binary
