@@ -22,7 +22,10 @@ setup(
     install_requires=[
         "capstone>=4.0.0", "keystone-engine>=0.9.2", "pefile>=2023.2.7",
         "pyelftools>=0.29", "unicorn>=2.0.0", "volatility3>=2.0.0",
-        "scapy>=2.5.0", "pyts>=0.12.0", "dfir-ntfs>=2022.1.0",
+        "scapy>=2.5.0", "pyts>=0.12.0",
+        # TODO: Temporarily removed because dfir_ntfs is not PyPI-installable.
+        # NTFS/MFT parsing needs either git+https or another PyPI parser later.
+        # Repository: https://github.com/msuhanov/dfir_ntfs
         "artifacts>=2023.1.0", "yara-python>=4.3.0", "pandas>=2.0.0",
         "numpy>=1.24.0", "matplotlib>=3.7.0", "pyyaml>=6.0.0",
         "requests>=2.31.0", "psutil>=5.9.0", "python-magic>=0.4.27",
